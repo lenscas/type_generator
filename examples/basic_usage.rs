@@ -8,6 +8,7 @@ struct TestType {
     a_number: i64,
     optional_float: Option<f32>,
     optional_external: Option<ExternalType>,
+    external_simple_enum: Option<SimpleEnum>,
 }
 #[derive(JsonSchema)]
 #[allow(dead_code)]
@@ -22,14 +23,21 @@ enum TestEnum {
     B(f32),
     C { test: f32 },
 }
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+enum SimpleEnum {
+    A,
+    B,
+    C,
+}
 
 fn main() {
     println!(
         "{}",
-        serde_json::to_string_pretty(&schemars::schema_for!(TestEnum)).unwrap()
+        serde_json::to_string_pretty(&schemars::schema_for!(TestType)).unwrap()
     );
     let mut external_types = ExternalTypeCollector::new();
-    let x = gen_from_type::<TestEnum>(&mut external_types);
+    let x = gen_from_type::<TestType>(&mut external_types);
 
     match x {
         Ok(x) => println!("{}", x),

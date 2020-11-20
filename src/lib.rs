@@ -4,6 +4,7 @@ use schemars::{
     schema::{InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject, SingleOrVec},
     Map,
 };
+use serde_json::Value;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -32,7 +33,7 @@ impl ExternalTypeCollector {
             Schema::Object(x) => {
                 let genned_type = gen_from_schema(&x, &reference, self)?;
                 self.parsed_types.insert(reference.clone(), genned_type);
-                get_name(&x).map(ToOwned::to_owned).or(Ok(reference))
+                Ok(reference)
             }
         }
     }
@@ -55,6 +56,7 @@ pub enum Error {
     TypeNotInDefs,
     EnumHasNoTypes,
     ExternalTypeNotAvailable,
+    SimpleEnumNotSimple,
 }
 
 fn remove_start_from_ref(s: &str) -> &str {
@@ -82,14 +84,14 @@ pub fn gen_from_type<A: schemars::JsonSchema>(x: &mut ExternalTypeCollector) -> 
 
 pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<String> {
     let schema = a.schema;
-    let name = get_name(&schema)?;
+    let name = get_name(&schema, x)?;
     x.add_types_to_parse(a.definitions);
-    gen_from_schema(&schema, name, x)
+    gen_from_schema(&schema, &name, x)
 }
 
 fn gen_from_schema(a: &SchemaObject, name: &str, x: &mut ExternalTypeCollector) -> Result<String> {
     if should_map_to_enum(&a) {
-        gen_enum(&a, x)
+        gen_enum(&a, x, Some(name))
     } else {
         gen_object_from_schema_object(&a, name, x)
     }
@@ -105,29 +107,68 @@ fn gen_object_from_schema_object(
 }
 
 ///tries to get the name of a type.
-fn get_name(a: &SchemaObject) -> Result<&str> {
+fn get_name(a: &SchemaObject, y: &mut ExternalTypeCollector) -> Result<String> {
     a.metadata
         .as_deref()
-        .ok_or(Error::NoMetaDataForType)?
-        .title
-        .as_deref()
+        .and_then(|v| v.title.as_deref())
+        .map(ToOwned::to_owned)
         .ok_or(Error::NoNameForType)
+        .or_else(|x| {
+            a.instance_type
+                .as_ref()
+                .map(|v| build_in_types_to_name(v, &None, y))
+                .ok_or(x)
+                .and_then(|v| v)
+        })
 }
 //looks if the json conains an "anyof"
 fn should_map_to_enum(a: &SchemaObject) -> bool {
     a.object.is_none()
 }
-fn gen_enum(a: &SchemaObject, x: &mut ExternalTypeCollector) -> Result<String> {
+fn gen_enum(
+    a: &SchemaObject,
+    x: &mut ExternalTypeCollector,
+    name_overwrite: Option<&str>,
+) -> Result<String> {
     a.subschemas
         .as_deref()
         .and_then(|v| v.any_of.as_ref())
-        .ok_or(Error::EnumHasNoTypes)
-        .and_then(|v| {
+        .map(|v| {
             v.iter()
                 .map(|a| get_type_from_schema(a, x))
                 .collect::<Result<Vec<_>>>()
                 .map(|v| v.join("\n"))
         })
+        .or_else(|| {
+            a.enum_values.as_ref().map(|v| {
+                name_overwrite
+                    .map(ToOwned::to_owned)
+                    .map(Ok)
+                    .or_else(|| {
+                        a.instance_type
+                            .as_ref()
+                            .map(|z| build_in_types_to_name(z, &a.object, x))
+                    })
+                    .map(|z| {
+                        let res = z?;
+                        Ok(format!(
+                            "{}{}",
+                            gen_simple_enum_header(&res),
+                            gen_simple_enum_body(v)?
+                        ))
+                    })
+                    .ok_or(Error::NoTypeSet)
+                    .and_then(|v| v)
+            })
+        })
+        .unwrap_or(Err(Error::EnumHasNoTypes))
+}
+fn gen_simple_enum_body(a: &[Value]) -> Result<String> {
+    a.iter()
+        .map(|v| serde_json::from_value::<String>(v.clone()))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::SimpleEnumNotSimple)
+        .map(|v| format!("    | {}", v.join("\n    | ")))
 }
 
 fn get_type_from_schema(a: &Schema, d: &mut ExternalTypeCollector) -> Result<String> {
@@ -237,7 +278,19 @@ fn gen_full_object(
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
     let body = get_object_body(a, x)?;
-    Ok(format!("type {} =\n    {{\n{}\n    }}", type_name, body))
+    Ok(format!(
+        "{}    {{\n{}\n    }}",
+        gen_object_header(type_name),
+        body
+    ))
+}
+
+fn gen_simple_enum_header(type_name: &str) -> String {
+    format!("type {} = \n", type_name)
+}
+
+fn gen_object_header(type_name: &str) -> String {
+    format!("type = {} = \n", type_name)
 }
 
 fn get_object_body(a: &ObjectValidation, x: &mut ExternalTypeCollector) -> Result<String> {
