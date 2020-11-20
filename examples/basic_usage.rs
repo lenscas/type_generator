@@ -9,6 +9,10 @@ struct TestType {
     optional_float: Option<f32>,
     optional_external: Option<ExternalType>,
     external_simple_enum: Option<SimpleEnum>,
+    a_simple_array: Vec<f32>,
+    an_array_of_options: Vec<Option<String>>,
+    an_external_array: Vec<ExternalType>,
+    an_optional_array: Option<Vec<SimpleEnum>>,
 }
 #[derive(JsonSchema)]
 #[allow(dead_code)]

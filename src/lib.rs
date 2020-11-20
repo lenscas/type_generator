@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use schemars::{
-    schema::{InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject, SingleOrVec},
+    schema::{
+        ArrayValidation, InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject,
+        SingleOrVec,
+    },
     Map,
 };
 use serde_json::Value;
@@ -20,8 +23,6 @@ impl ExternalTypeCollector {
     }
     pub fn get_type(&mut self, reference: &str) -> Result<String> {
         let reference = remove_start_from_ref(reference);
-        dbg!(&self.types_to_parse);
-
         let x = self
             .types_to_parse
             .get(reference)
@@ -116,7 +117,7 @@ fn get_name(a: &SchemaObject, y: &mut ExternalTypeCollector) -> Result<String> {
         .or_else(|x| {
             a.instance_type
                 .as_ref()
-                .map(|v| build_in_types_to_name(v, &None, y))
+                .map(|v| build_in_types_to_name(v, &a.object, &a.array, y))
                 .ok_or(x)
                 .and_then(|v| v)
         })
@@ -147,7 +148,7 @@ fn gen_enum(
                     .or_else(|| {
                         a.instance_type
                             .as_ref()
-                            .map(|z| build_in_types_to_name(z, &a.object, x))
+                            .map(|z| build_in_types_to_name(z, &a.object, &a.array, x))
                     })
                     .map(|z| {
                         let res = z?;
@@ -177,7 +178,7 @@ fn get_type_from_schema(a: &Schema, d: &mut ExternalTypeCollector) -> Result<Str
         Schema::Object(x) => x
             .instance_type
             .as_ref()
-            .map(|v| build_in_types_to_name(v, &x.object, d))
+            .map(|v| build_in_types_to_name(v, &x.object, &x.array, d))
             .or_else(|| {
                 let x = x.reference.as_deref().map(|v| d.get_type(v));
                 x
@@ -224,11 +225,12 @@ fn convert_any_to_known_type(v: &[Schema], x: &mut ExternalTypeCollector) -> Res
 fn build_in_types_to_name(
     a: &SingleOrVec<InstanceType>,
     v: &Option<Box<ObjectValidation>>,
+    y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
     match a {
-        SingleOrVec::Single(a) => singular_build_in_type_to_name(a, v, x),
-        SingleOrVec::Vec(a) => build_in_types_from_multiple(a, v, x),
+        SingleOrVec::Single(a) => singular_build_in_type_to_name(a, v, y, x),
+        SingleOrVec::Vec(a) => build_in_types_from_multiple(a, v, y, x),
     }
 }
 
@@ -239,23 +241,25 @@ fn make_type_optional(a: &str) -> String {
 fn build_in_types_from_multiple(
     a: &[InstanceType],
     v: &Option<Box<ObjectValidation>>,
+    y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
     if a.len() == 2 {
         let without_null: Vec<_> = a.iter().filter(|v| v != &&InstanceType::Null).collect();
         if without_null.len() == 1 {
-            return singular_build_in_type_to_name(without_null[0], v, x)
+            return singular_build_in_type_to_name(without_null[0], v, y, x)
                 .map(|v| make_type_optional(&v));
         }
     }
     a.iter()
-        .map(|a| singular_build_in_type_to_name(a, v, x))
+        .map(|a| singular_build_in_type_to_name(a, v, y, x))
         .collect()
 }
 
 fn singular_build_in_type_to_name(
     a: &InstanceType,
     v: &Option<Box<ObjectValidation>>,
+    y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
     Ok(match a {
@@ -265,7 +269,17 @@ fn singular_build_in_type_to_name(
             .as_ref()
             .map(|v| get_object_body(v, x))
             .unwrap_or_else(|| Ok("object".to_string()))?,
-        InstanceType::Array => "object[]".to_string(),
+        InstanceType::Array => y
+            .as_ref()
+            .and_then(|v| v.items.as_ref())
+            .map(|v| match v {
+                SingleOrVec::Single(v) => get_type_from_schema(v.as_ref(), x),
+                SingleOrVec::Vec(_) => {
+                    todo!("an array of multiple types is not yet supported!")
+                }
+            })
+            .unwrap_or_else(|| Ok(String::from("object")))
+            .map(|x| format!("{}[]", x))?,
         InstanceType::Number => "float".to_string(),
         InstanceType::String => "string".to_string(),
         InstanceType::Integer => "int".to_string(),
@@ -290,7 +304,7 @@ fn gen_simple_enum_header(type_name: &str) -> String {
 }
 
 fn gen_object_header(type_name: &str) -> String {
-    format!("type = {} = \n", type_name)
+    gen_simple_enum_header(type_name)
 }
 
 fn get_object_body(a: &ObjectValidation, x: &mut ExternalTypeCollector) -> Result<String> {
