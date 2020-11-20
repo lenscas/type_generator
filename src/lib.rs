@@ -237,13 +237,13 @@ fn gen_full_object(
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
     let body = get_object_body(a, x)?;
-    Ok(format!("type {} =\n\tstruct\n{}\n\tend", type_name, body))
+    Ok(format!("type {} =\n    {{\n{}\n    }}", type_name, body))
 }
 
 fn get_object_body(a: &ObjectValidation, x: &mut ExternalTypeCollector) -> Result<String> {
     Ok(get_object_parts(a, x)?
         .into_iter()
-        .map(|(key_name, of_type)| format!("\t\tval {} : {}", key_name, of_type))
+        .map(|(key_name, of_type)| format!("        {} : {}", key_name, of_type))
         .collect::<Vec<_>>()
         .join("\n"))
 }
