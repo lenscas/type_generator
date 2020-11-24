@@ -37,9 +37,20 @@ enum SimpleEnum {
     C,
 }
 
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+enum SimpleRecursiveEnum {
+    Rec(Box<SimpleRecursiveEnum>),
+    Nope(f64),
+}
+
 fn main() {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&schemars::schema_for!(SimpleRecursiveEnum)).unwrap()
+    );
     let mut external_types = ExternalTypeCollector::new();
-    let x = gen_from_type::<TestType>(&mut external_types);
+    let x = gen_from_type::<SimpleRecursiveEnum>(&mut external_types);
     external_types
         .get_external_types()
         .for_each(|(_, v)| println!("{}", v));

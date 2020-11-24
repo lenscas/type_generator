@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use schemars::{
     schema::{
         ArrayValidation, InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject,
@@ -12,6 +14,7 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Default)]
 pub struct ExternalTypeCollector {
     parsed_types: Map<String, String>,
+    working_on: HashSet<String>,
     types_to_parse: Map<String, Schema>,
 }
 
@@ -31,13 +34,20 @@ impl ExternalTypeCollector {
     }
     pub fn get_type(&mut self, reference: &str) -> Result<String> {
         let reference = remove_start_from_ref(reference);
-        let x = self
-            .types_to_parse
-            .get(reference)
-            .ok_or(Error::ExternalTypeNotAvailable)?
-            .clone();
-        let reference = reference.to_owned();
-        self.gen_type_and_insert(reference, &x)
+        if self.working_on.contains(reference) {
+            Ok(reference.to_owned())
+        } else {
+            let x = self
+                .types_to_parse
+                .get(reference)
+                .ok_or(Error::ExternalTypeNotAvailable)?
+                .clone();
+            let reference = reference.to_owned();
+            self.working_on.insert(reference.to_owned());
+            let res = self.gen_type_and_insert(reference.to_owned(), &x);
+            self.working_on.remove(&reference);
+            res
+        }
     }
     pub fn add_types_to_parse(&mut self, types: Map<String, Schema>) {
         self.types_to_parse.extend(types)
@@ -214,8 +224,7 @@ fn get_type_from_schema(
                         .map(|v| convert_any_to_known_type(&v, d, type_prefix))
                 })
             })
-            .ok_or(Error::NoTypeSet)
-            .unwrap(),
+            .unwrap_or(Err(Error::NoTypeSet)),
     }
 }
 
