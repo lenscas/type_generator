@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use schemars::{
     schema::{
         ArrayValidation, InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject,
@@ -13,13 +11,23 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Default)]
 pub struct ExternalTypeCollector {
-    parsed_types: HashMap<String, String>,
+    parsed_types: Map<String, String>,
     types_to_parse: Map<String, Schema>,
 }
 
 impl ExternalTypeCollector {
     pub fn new() -> Self {
         Default::default()
+    }
+    fn gen_type_and_insert(&mut self, reference: String, type_rep: &Schema) -> Result<String> {
+        match type_rep {
+            Schema::Bool(_) => Ok(reference),
+            Schema::Object(x) => {
+                let genned_type = gen_from_schema(x, &reference, self)?;
+                self.parsed_types.insert(reference.clone(), genned_type);
+                Ok(reference)
+            }
+        }
     }
     pub fn get_type(&mut self, reference: &str) -> Result<String> {
         let reference = remove_start_from_ref(reference);
@@ -29,17 +37,15 @@ impl ExternalTypeCollector {
             .ok_or(Error::ExternalTypeNotAvailable)?
             .clone();
         let reference = reference.to_owned();
-        match x {
-            Schema::Bool(_) => Ok(reference),
-            Schema::Object(x) => {
-                let genned_type = gen_from_schema(&x, &reference, self)?;
-                self.parsed_types.insert(reference.clone(), genned_type);
-                Ok(reference)
-            }
-        }
+        self.gen_type_and_insert(reference, &x)
     }
     pub fn add_types_to_parse(&mut self, types: Map<String, Schema>) {
         self.types_to_parse.extend(types)
+    }
+    pub fn add_unnamed_type(&mut self, prefix: &str, type_rep: &ObjectValidation) -> Result<()> {
+        let res = gen_full_object(type_rep, prefix, self)?;
+        self.parsed_types.insert(prefix.to_owned(), res);
+        Ok(())
     }
     pub fn get_external_types(&self) -> impl Iterator<Item = (&String, &String)> {
         self.parsed_types.iter()
@@ -92,7 +98,7 @@ pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<String> {
 
 fn gen_from_schema(a: &SchemaObject, name: &str, x: &mut ExternalTypeCollector) -> Result<String> {
     if should_map_to_enum(&a) {
-        gen_enum(&a, x, Some(name))
+        gen_enum(&a, x, Some(name), name)
     } else {
         gen_object_from_schema_object(&a, name, x)
     }
@@ -117,7 +123,7 @@ fn get_name(a: &SchemaObject, y: &mut ExternalTypeCollector) -> Result<String> {
         .or_else(|x| {
             a.instance_type
                 .as_ref()
-                .map(|v| build_in_types_to_name(v, &a.object, &a.array, y))
+                .map(|v| build_in_types_to_name(v, &a.object, &a.array, y, ""))
                 .ok_or(x)
                 .and_then(|v| v)
         })
@@ -130,39 +136,53 @@ fn gen_enum(
     a: &SchemaObject,
     x: &mut ExternalTypeCollector,
     name_overwrite: Option<&str>,
+    type_prefix: &str,
 ) -> Result<String> {
+    let header = name_overwrite
+        .map(ToOwned::to_owned)
+        .map(Ok)
+        .or_else(|| {
+            a.instance_type
+                .as_ref()
+                .map(|z| build_in_types_to_name(z, &a.object, &a.array, x, type_prefix))
+        })
+        .ok_or(Error::NoTypeSet)?
+        .map(|res| gen_simple_enum_header(&res))?;
     a.subschemas
         .as_deref()
         .and_then(|v| v.any_of.as_ref())
         .map(|v| {
             v.iter()
-                .map(|a| get_type_from_schema(a, x))
-                .collect::<Result<Vec<_>>>()
-                .map(|v| v.join("\n"))
+                .map(|a| match a {
+                    Schema::Bool(_) => {
+                        panic!()
+                    }
+                    Schema::Object(z) => z
+                        .object
+                        .as_ref()
+                        .map(|y| {
+                            let (prop_name, schema) =
+                                y.properties.iter().next().expect("expected one property");
+                            let type_name = get_type_from_schema(
+                                schema,
+                                x,
+                                &format!("{}{}", type_prefix, prop_name),
+                            )?;
+                            Ok(format!("    | {} of {}\n", prop_name, type_name))
+                        })
+                        .or_else(|| {
+                            z.enum_values
+                                .as_ref()
+                                .map(|v| gen_simple_enum_body(v).map(|v| format!("{}\n", v)))
+                        })
+                        .ok_or(Error::NoNameForType)
+                        .and_then(|v| v),
+                })
+                .collect::<Result<String>>()
         })
-        .or_else(|| {
-            a.enum_values.as_ref().map(|v| {
-                name_overwrite
-                    .map(ToOwned::to_owned)
-                    .map(Ok)
-                    .or_else(|| {
-                        a.instance_type
-                            .as_ref()
-                            .map(|z| build_in_types_to_name(z, &a.object, &a.array, x))
-                    })
-                    .map(|z| {
-                        let res = z?;
-                        Ok(format!(
-                            "{}{}",
-                            gen_simple_enum_header(&res),
-                            gen_simple_enum_body(v)?
-                        ))
-                    })
-                    .ok_or(Error::NoTypeSet)
-                    .and_then(|v| v)
-            })
-        })
+        .or_else(|| a.enum_values.as_ref().map(|v| gen_simple_enum_body(v)))
         .unwrap_or(Err(Error::EnumHasNoTypes))
+        .map(|v| format!("{}\n{}", header, v))
 }
 fn gen_simple_enum_body(a: &[Value]) -> Result<String> {
     a.iter()
@@ -172,28 +192,38 @@ fn gen_simple_enum_body(a: &[Value]) -> Result<String> {
         .map(|v| format!("    | {}", v.join("\n    | ")))
 }
 
-fn get_type_from_schema(a: &Schema, d: &mut ExternalTypeCollector) -> Result<String> {
+fn get_type_from_schema(
+    a: &Schema,
+    d: &mut ExternalTypeCollector,
+    type_prefix: &str,
+) -> Result<String> {
     match a {
         Schema::Bool(_) => Err(Error::TypeIsNoRealType),
         Schema::Object(x) => x
             .instance_type
             .as_ref()
-            .map(|v| build_in_types_to_name(v, &x.object, &x.array, d))
+            .map(|v| build_in_types_to_name(v, &x.object, &x.array, d, type_prefix))
             .or_else(|| {
                 let x = x.reference.as_deref().map(|v| d.get_type(v));
                 x
             })
             .or_else(|| {
-                x.subschemas
-                    .as_deref()
-                    .and_then(|v| v.any_of.as_ref().map(|v| convert_any_to_known_type(&v, d)))
+                x.subschemas.as_deref().and_then(|v| {
+                    v.any_of
+                        .as_ref()
+                        .map(|v| convert_any_to_known_type(&v, d, type_prefix))
+                })
             })
             .ok_or(Error::NoTypeSet)
             .unwrap(),
     }
 }
 
-fn convert_any_to_known_type(v: &[Schema], x: &mut ExternalTypeCollector) -> Result<String> {
+fn convert_any_to_known_type(
+    v: &[Schema],
+    x: &mut ExternalTypeCollector,
+    type_prefix: &str,
+) -> Result<String> {
     if v.len() == 2 {
         let without_null: Vec<_> = v
             .iter()
@@ -210,11 +240,12 @@ fn convert_any_to_known_type(v: &[Schema], x: &mut ExternalTypeCollector) -> Res
             })
             .collect();
         if without_null.len() == 1 {
-            return get_type_from_schema(without_null[0], x).map(|v| make_type_optional(&v));
+            return get_type_from_schema(without_null[0], x, type_prefix)
+                .map(|v| make_type_optional(&v));
         } else {
             return v
                 .iter()
-                .map(|v| get_type_from_schema(v, x))
+                .map(|v| get_type_from_schema(v, x, type_prefix))
                 .collect::<Result<Vec<_>>>()
                 .map(|v| format!("result<{}>", v.join(",")));
         }
@@ -227,10 +258,11 @@ fn build_in_types_to_name(
     v: &Option<Box<ObjectValidation>>,
     y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
+    type_prefix: &str,
 ) -> Result<String> {
     match a {
-        SingleOrVec::Single(a) => singular_build_in_type_to_name(a, v, y, x),
-        SingleOrVec::Vec(a) => build_in_types_from_multiple(a, v, y, x),
+        SingleOrVec::Single(a) => singular_build_in_type_to_name(a, v, y, x, type_prefix),
+        SingleOrVec::Vec(a) => build_in_types_from_multiple(a, v, y, x, type_prefix),
     }
 }
 
@@ -243,16 +275,17 @@ fn build_in_types_from_multiple(
     v: &Option<Box<ObjectValidation>>,
     y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
+    type_prefix: &str,
 ) -> Result<String> {
     if a.len() == 2 {
         let without_null: Vec<_> = a.iter().filter(|v| v != &&InstanceType::Null).collect();
         if without_null.len() == 1 {
-            return singular_build_in_type_to_name(without_null[0], v, y, x)
+            return singular_build_in_type_to_name(without_null[0], v, y, x, type_prefix)
                 .map(|v| make_type_optional(&v));
         }
     }
     a.iter()
-        .map(|a| singular_build_in_type_to_name(a, v, y, x))
+        .map(|a| singular_build_in_type_to_name(a, v, y, x, type_prefix))
         .collect()
 }
 
@@ -261,25 +294,32 @@ fn singular_build_in_type_to_name(
     v: &Option<Box<ObjectValidation>>,
     y: &Option<Box<ArrayValidation>>,
     x: &mut ExternalTypeCollector,
+    type_prefix: &str,
 ) -> Result<String> {
     Ok(match a {
         InstanceType::Null => "unit".to_string(),
         InstanceType::Boolean => "bool".to_string(),
         InstanceType::Object => v
             .as_ref()
-            .map(|v| get_object_body(v, x))
+            .map(|v| {
+                x.add_unnamed_type(type_prefix, v)?;
+                Ok(type_prefix.to_owned())
+            })
             .unwrap_or_else(|| Ok("object".to_string()))?,
         InstanceType::Array => y
             .as_ref()
             .and_then(|v| v.items.as_ref())
             .map(|v| match v {
-                SingleOrVec::Single(v) => get_type_from_schema(v.as_ref(), x),
-                SingleOrVec::Vec(_) => {
-                    todo!("an array of multiple types is not yet supported!")
+                SingleOrVec::Single(v) => {
+                    get_type_from_schema(v.as_ref(), x, type_prefix).map(|v| format!("{}[]", v))
                 }
+                SingleOrVec::Vec(v) => v
+                    .iter()
+                    .map(|v| get_type_from_schema(v, x, type_prefix))
+                    .collect::<Result<Vec<_>>>()
+                    .map(|v| v.join(" * ")),
             })
-            .unwrap_or_else(|| Ok(String::from("object")))
-            .map(|x| format!("{}[]", x))?,
+            .unwrap_or_else(|| Ok(String::from("object[]")))?,
         InstanceType::Number => "float".to_string(),
         InstanceType::String => "string".to_string(),
         InstanceType::Integer => "int".to_string(),
@@ -291,7 +331,7 @@ fn gen_full_object(
     type_name: &str,
     x: &mut ExternalTypeCollector,
 ) -> Result<String> {
-    let body = get_object_body(a, x)?;
+    let body = get_object_body(a, x, type_name)?;
     Ok(format!(
         "{}    {{\n{}\n    }}",
         gen_object_header(type_name),
@@ -307,8 +347,13 @@ fn gen_object_header(type_name: &str) -> String {
     gen_simple_enum_header(type_name)
 }
 
-fn get_object_body(a: &ObjectValidation, x: &mut ExternalTypeCollector) -> Result<String> {
-    Ok(get_object_parts(a, x)?
+fn get_object_body(
+    a: &ObjectValidation,
+    x: &mut ExternalTypeCollector,
+    type_prefix: &str,
+) -> Result<String> {
+    //panic!("should we get here? {:?}", a);
+    Ok(get_object_parts(a, x, type_prefix)?
         .into_iter()
         .map(|(key_name, of_type)| format!("        {} : {}", key_name, of_type))
         .collect::<Vec<_>>()
@@ -317,9 +362,12 @@ fn get_object_body(a: &ObjectValidation, x: &mut ExternalTypeCollector) -> Resul
 fn get_object_parts(
     a: &ObjectValidation,
     x: &mut ExternalTypeCollector,
+    type_prefix: &str,
 ) -> Result<Vec<(String, String)>> {
     a.properties
         .iter()
-        .map(|(key, value)| get_type_from_schema(&value, x).map(|v| (key.to_owned(), v)))
+        .map(|(key, value)| {
+            get_type_from_schema(&value, x, type_prefix).map(|v| (key.to_owned(), v))
+        })
         .collect::<Result<Vec<(String, String)>>>()
 }
