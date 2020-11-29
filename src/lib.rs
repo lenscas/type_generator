@@ -5,15 +5,16 @@ use schemars::{
         ArrayValidation, InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject,
         SingleOrVec,
     },
-    Map,
+    Map
 };
 use serde_json::Value;
+use  indexmap::map::IndexMap;
 
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Default)]
 pub struct ExternalTypeCollector {
-    parsed_types: Map<String, String>,
+    parsed_types: IndexMap<String, String>,
     working_on: HashSet<String>,
     types_to_parse: Map<String, Schema>,
 }
