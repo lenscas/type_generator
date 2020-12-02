@@ -120,7 +120,8 @@ let main argv =
         Ok(x) => x,
         Err(y) => {
             println!("Could not deserialize from output. Got:\n {}\n\n",String::from_utf8(x.stdout).expect("could not turn bytes of stdout into string"));
-            println!("stderr: \n{}\n",String::from_utf8(x.stderr).expect("could not turn bytes of stderr into string"));
+            println!("stderr: \n{}\n\n",String::from_utf8(x.stderr).expect("could not turn bytes of stderr into string"));
+            println!("got error:{}",y);
             panic!()
         }
     };

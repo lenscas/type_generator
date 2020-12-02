@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt};
 
 use schemars::{
     schema::{
@@ -71,11 +71,26 @@ pub enum Error {
     NoObjectPartFound,
     TypeIsNoRealType,
     NoTypeSet,
-    TypeNotInDefs,
     EnumHasNoTypes,
     ExternalTypeNotAvailable,
     SimpleEnumNotSimple,
 }
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::NoMetaDataForType => write!(f, "The type was expected to have metadata but this was not found"),
+            Error::NoNameForType => write!(f, "The type did not have a useable typename, nor could one be generated"),
+            Error::NoSubSchemaForType => write!(f, "The type was expected to have subschema's, but none found"),
+            Error::NoObjectPartFound => write!(f, "The type was expected to have a object part, but none found"),
+            Error::TypeIsNoRealType => write!(f, "The type doesn't have a good definition."),
+            Error::NoTypeSet => write!(f, "The type was expected to have the instance_type field, but none found "),
+            Error::EnumHasNoTypes => write!(f,"No suitable type found for one of the variants of the enum"),
+            Error::ExternalTypeNotAvailable => write!(f,"An external type was referenced, but it was not found"),
+            Error::SimpleEnumNotSimple => write!(f,"An enum was expected to not store any values, but it does"),
+        }
+    }
+}
+impl std::error::Error for Error {}
 
 fn remove_start_from_ref(s: &str) -> &str {
     let mut to_remove_from_start = "#/definitions/".chars();
