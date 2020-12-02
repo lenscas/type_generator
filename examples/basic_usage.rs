@@ -44,14 +44,21 @@ enum SimpleRecursiveEnum {
     Nope(f64),
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut external_types = ExternalTypeCollector::new();
-    let x = gen_from_type::<TestType>(&mut external_types);
+    let x = gen_from_type::<TestType>(&mut external_types)
+        .map(|x| x.into_option().map(|v| v.to_owned()));
+
     external_types
-        .get_external_types()
+        .get_new_external_types()
         .for_each(|(_, v)| println!("{}", v));
     match x {
-        Ok(x) => println!("{}\n", x),
+        Ok(x) => {
+            if let Some(x) = x {
+                println!("{}", x)
+            }
+        }
         Err(x) => println!("ERROR!!!\n{:?}", x),
     }
+    Ok(())
 }

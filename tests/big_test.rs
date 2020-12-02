@@ -14,7 +14,7 @@ struct TestType {
     a_simple_array: Vec<f32>,
     an_array_of_options: Vec<Option<String>>,
     an_external_array: Vec<ExternalType>,
-    //an_optional_array: Option<Vec<SimpleEnum>>,
+    recursive_type: SimpleRecursiveEnum,
 }
 #[derive(JsonSchema, Deserialize, Serialize, PartialEq)]
 #[allow(dead_code)]
@@ -49,7 +49,11 @@ enum SimpleRecursiveEnum {
 #[test]
 fn test_gen() {
     let mut external_types = ExternalTypeCollector::new();
-    let generated_type = gen_from_type::<TestType>(&mut external_types).unwrap();
+    let generated_type = gen_from_type::<TestType>(&mut external_types)
+        .unwrap()
+        .into_option()
+        .unwrap()
+        .to_owned();
     let data = TestType {
         a_string: "this is a string".into(),
         a_number: 2,
@@ -71,14 +75,13 @@ fn test_gen() {
                 test: "second".into(),
             },
         ],
-        //an_optional_array: Some(vec![SimpleEnum::A, SimpleEnum::B, SimpleEnum::C]),
+        recursive_type: SimpleRecursiveEnum::Rec(Box::new(SimpleRecursiveEnum::Nope(20.1))),
     };
     let json = serde_json::to_string(&serde_json::to_string(&data).expect("could not serialize"))
         .expect("very ugly hack to escape everything did not work :(");
     let external_types_string = external_types
-        .get_external_types()
+        .get_new_external_types()
         .map(|v| v.1)
-        .cloned()
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -119,9 +122,15 @@ let main argv =
     let output = match serde_json::from_slice::<TestType>(&x.stdout) {
         Ok(x) => x,
         Err(y) => {
-            println!("Could not deserialize from output. Got:\n {}\n\n",String::from_utf8(x.stdout).expect("could not turn bytes of stdout into string"));
-            println!("stderr: \n{}\n\n",String::from_utf8(x.stderr).expect("could not turn bytes of stderr into string"));
-            println!("got error:{}",y);
+            println!(
+                "Could not deserialize from output. Got:\n {}\n\n",
+                String::from_utf8(x.stdout).expect("could not turn bytes of stdout into string")
+            );
+            println!(
+                "stderr: \n{}\n\n",
+                String::from_utf8(x.stderr).expect("could not turn bytes of stderr into string")
+            );
+            println!("got error:{}", y);
             panic!()
         }
     };

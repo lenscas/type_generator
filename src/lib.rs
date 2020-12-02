@@ -1,20 +1,21 @@
 use std::{collections::HashSet, fmt};
 
+use indexmap::map::IndexMap;
 use schemars::{
     schema::{
         ArrayValidation, InstanceType, ObjectValidation, RootSchema, Schema, SchemaObject,
         SingleOrVec,
     },
-    Map
+    Map,
 };
 use serde_json::Value;
-use  indexmap::map::IndexMap;
 
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Default)]
 pub struct ExternalTypeCollector {
     parsed_types: IndexMap<String, String>,
+    new_external_types: IndexMap<String, String>,
     working_on: HashSet<String>,
     types_to_parse: Map<String, Schema>,
 }
@@ -28,6 +29,8 @@ impl ExternalTypeCollector {
             Schema::Bool(_) => Ok(reference),
             Schema::Object(x) => {
                 let genned_type = gen_from_schema(x, &reference, self)?;
+                self.new_external_types
+                    .insert(reference.clone(), genned_type.clone());
                 self.parsed_types.insert(reference.clone(), genned_type);
                 Ok(reference)
             }
@@ -35,31 +38,42 @@ impl ExternalTypeCollector {
     }
     pub fn get_type(&mut self, reference: &str) -> Result<String> {
         let reference = remove_start_from_ref(reference);
-        if self.working_on.contains(reference) {
-            Ok(reference.to_owned())
-        } else {
-            let x = self
-                .types_to_parse
-                .get(reference)
-                .ok_or(Error::ExternalTypeNotAvailable)?
-                .clone();
-            let reference = reference.to_owned();
-            self.working_on.insert(reference.to_owned());
-            let res = self.gen_type_and_insert(reference.to_owned(), &x);
-            self.working_on.remove(&reference);
-            res
+        if self.new_external_types.contains_key(reference)
+            || self.parsed_types.contains_key(reference)
+        {
+            return Ok(reference.to_owned());
         }
+        self.parsed_types
+            .get(reference)
+            .map(|v| Ok(v.clone()))
+            .unwrap_or_else(|| {
+                if self.working_on.contains(reference) {
+                    Ok(reference.to_owned())
+                } else {
+                    let x = self
+                        .types_to_parse
+                        .get(reference)
+                        .ok_or(Error::ExternalTypeNotAvailable)?
+                        .clone();
+                    let reference = reference.to_owned();
+                    self.working_on.insert(reference.to_owned());
+                    let res = self.gen_type_and_insert(reference.to_owned(), &x);
+                    self.working_on.remove(&reference);
+                    res
+                }
+            })
     }
     pub fn add_types_to_parse(&mut self, types: Map<String, Schema>) {
         self.types_to_parse.extend(types)
     }
     pub fn add_unnamed_type(&mut self, prefix: &str, type_rep: &ObjectValidation) -> Result<()> {
         let res = gen_full_object(type_rep, prefix, self)?;
-        self.parsed_types.insert(prefix.to_owned(), res);
+        self.new_external_types.insert(prefix.to_owned(), res);
         Ok(())
     }
-    pub fn get_external_types(&self) -> impl Iterator<Item = (&String, &String)> {
-        self.parsed_types.iter()
+
+    pub fn get_new_external_types(&mut self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.new_external_types.drain(..)
     }
 }
 
@@ -78,15 +92,38 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::NoMetaDataForType => write!(f, "The type was expected to have metadata but this was not found"),
-            Error::NoNameForType => write!(f, "The type did not have a useable typename, nor could one be generated"),
-            Error::NoSubSchemaForType => write!(f, "The type was expected to have subschema's, but none found"),
-            Error::NoObjectPartFound => write!(f, "The type was expected to have a object part, but none found"),
+            Error::NoMetaDataForType => write!(
+                f,
+                "The type was expected to have metadata but this was not found"
+            ),
+            Error::NoNameForType => write!(
+                f,
+                "The type did not have a useable typename, nor could one be generated"
+            ),
+            Error::NoSubSchemaForType => write!(
+                f,
+                "The type was expected to have subschema's, but none found"
+            ),
+            Error::NoObjectPartFound => write!(
+                f,
+                "The type was expected to have a object part, but none found"
+            ),
             Error::TypeIsNoRealType => write!(f, "The type doesn't have a good definition."),
-            Error::NoTypeSet => write!(f, "The type was expected to have the instance_type field, but none found "),
-            Error::EnumHasNoTypes => write!(f,"No suitable type found for one of the variants of the enum"),
-            Error::ExternalTypeNotAvailable => write!(f,"An external type was referenced, but it was not found"),
-            Error::SimpleEnumNotSimple => write!(f,"An enum was expected to not store any values, but it does"),
+            Error::NoTypeSet => write!(
+                f,
+                "The type was expected to have the instance_type field, but none found "
+            ),
+            Error::EnumHasNoTypes => write!(
+                f,
+                "No suitable type found for one of the variants of the enum"
+            ),
+            Error::ExternalTypeNotAvailable => {
+                write!(f, "An external type was referenced, but it was not found")
+            }
+            Error::SimpleEnumNotSimple => write!(
+                f,
+                "An enum was expected to not store any values, but it does"
+            ),
         }
     }
 }
@@ -111,15 +148,70 @@ fn remove_start_from_ref(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-pub fn gen_from_type<A: schemars::JsonSchema>(x: &mut ExternalTypeCollector) -> Result<String> {
+pub enum GeneratedType<'a> {
+    Generated(&'a str),
+    FromExternalTypes(&'a str),
+}
+
+impl<'a> GeneratedType<'a> {
+    pub fn into_option(self) -> Option<&'a str> {
+        self.into()
+    }
+}
+
+impl<'a> From<GeneratedType<'a>> for String {
+    fn from(x: GeneratedType<'a>) -> Self {
+        match x {
+            GeneratedType::Generated(x) | GeneratedType::FromExternalTypes(x) => x.to_owned(),
+        }
+    }
+}
+impl<'a> From<GeneratedType<'a>> for &'a str {
+    fn from(x: GeneratedType<'a>) -> Self {
+        match x {
+            GeneratedType::Generated(x) | GeneratedType::FromExternalTypes(x) => x,
+        }
+    }
+}
+impl<'a> From<GeneratedType<'a>> for Option<&'a str> {
+    fn from(x: GeneratedType<'a>) -> Self {
+        match x {
+            GeneratedType::Generated(x) => Some(x),
+            GeneratedType::FromExternalTypes(_) => None,
+        }
+    }
+}
+impl<'a> fmt::Display for GeneratedType<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GeneratedType::Generated(x) | GeneratedType::FromExternalTypes(x) => x,
+        }
+        .fmt(f)
+    }
+}
+
+pub fn gen_from_type<A: schemars::JsonSchema>(
+    x: &mut ExternalTypeCollector,
+) -> Result<GeneratedType<'_>> {
     gen(schemars::schema_for!(A), x)
 }
 
-pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<String> {
+pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<GeneratedType<'_>> {
     let schema = a.schema;
+
     let name = get_name(&schema, x)?;
+    x.working_on.insert(name.clone());
     x.add_types_to_parse(a.definitions);
-    gen_from_schema(&schema, &name, x)
+
+    x.working_on.remove(&name);
+    let res = if x.parsed_types.contains_key(&name) {
+        GeneratedType::FromExternalTypes(x.parsed_types.get(&name).unwrap())
+    } else {
+        let res = gen_from_schema(&schema, &name, x)?;
+        x.parsed_types.insert(name.clone(), res);
+        GeneratedType::Generated(x.parsed_types.get(&name).unwrap())
+    };
+    Ok(res)
 }
 
 fn gen_from_schema(a: &SchemaObject, name: &str, x: &mut ExternalTypeCollector) -> Result<String> {
