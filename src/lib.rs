@@ -215,10 +215,10 @@ pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<GeneratedType
 }
 
 fn gen_from_schema(a: &SchemaObject, name: &str, x: &mut ExternalTypeCollector) -> Result<String> {
-    if should_map_to_enum(&a) {
-        gen_enum(&a, x, Some(name), name)
+    if should_map_to_enum(a) {
+        gen_enum(a, x, Some(name), name)
     } else {
-        gen_object_from_schema_object(&a, name, x)
+        gen_object_from_schema_object(a, name, x)
     }
 }
 
@@ -268,7 +268,10 @@ fn gen_enum(
         .map(|res| gen_simple_enum_header(&res))?;
     a.subschemas
         .as_deref()
-        .and_then(|v| v.any_of.as_ref())
+        .and_then(|v| match v.one_of.as_ref() {
+            Some(x) => Some(x),
+            None => v.any_of.as_ref(),
+        })
         .map(|v| {
             v.iter()
                 .map(|a| match a {
@@ -329,7 +332,7 @@ fn get_type_from_schema(
                 x.subschemas.as_deref().and_then(|v| {
                     v.any_of
                         .as_ref()
-                        .map(|v| convert_any_to_known_type(&v, d, type_prefix))
+                        .map(|v| convert_any_to_known_type(v, d, type_prefix))
                 })
             })
             .unwrap_or(Err(Error::NoTypeSet)),
@@ -484,7 +487,7 @@ fn get_object_parts(
     a.properties
         .iter()
         .map(|(key, value)| {
-            get_type_from_schema(&value, x, type_prefix).map(|v| (key.to_owned(), v))
+            get_type_from_schema(value, x, type_prefix).map(|v| (key.to_owned(), v))
         })
         .collect::<Result<Vec<(String, String)>>>()
 }
