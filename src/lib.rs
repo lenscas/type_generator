@@ -56,10 +56,7 @@ impl ExternalTypeCollector {
                         .ok_or(Error::ExternalTypeNotAvailable)?
                         .clone();
                     let reference = reference.to_owned();
-                    self.working_on.insert(reference.to_owned());
-                    let res = self.gen_type_and_insert(reference.to_owned(), &x);
-                    self.working_on.remove(&reference);
-                    res
+                    self.gen_type_and_insert(reference, &x)
                 }
             })
     }
@@ -200,26 +197,28 @@ pub fn gen(a: RootSchema, x: &mut ExternalTypeCollector) -> Result<GeneratedType
     let schema = a.schema;
 
     let name = get_name(&schema, x)?;
-    x.working_on.insert(name.clone());
     x.add_types_to_parse(a.definitions);
-
-    x.working_on.remove(&name);
     let res = if x.parsed_types.contains_key(&name) {
+        x.working_on.remove(&name);
         GeneratedType::FromExternalTypes(x.parsed_types.get(&name).unwrap())
     } else {
         let res = gen_from_schema(&schema, &name, x)?;
         x.parsed_types.insert(name.clone(), res);
-        GeneratedType::Generated(x.parsed_types.get(&name).unwrap())
+        let parsed = x.parsed_types.get(&name).unwrap();
+        GeneratedType::Generated(parsed)
     };
     Ok(res)
 }
 
 fn gen_from_schema(a: &SchemaObject, name: &str, x: &mut ExternalTypeCollector) -> Result<String> {
-    if should_map_to_enum(a) {
+    x.working_on.insert(name.to_owned());
+    let res = if should_map_to_enum(a) {
         gen_enum(a, x, Some(name), name)
     } else {
         gen_object_from_schema_object(a, name, x)
-    }
+    };
+    x.working_on.remove(name);
+    res
 }
 
 fn gen_object_from_schema_object(
