@@ -423,8 +423,14 @@ fn singular_build_in_type_to_name(
             .map(|v| {
                 v.additional_properties
                     .as_ref()
-                    .map(|v| {
-                        get_type_from_schema(v, x, type_prefix).map(|v| format!("Map<string,{v}>"))
+                    .and_then(|v| {
+                        match get_type_from_schema(v, x, type_prefix)
+                            .map(|v| format!("Map<string,{v}>"))
+                        {
+                            Ok(x) => Some(Ok(x)),
+                            Err(Error::TypeIsNoRealType) => None,
+                            Err(x) => Some(Err(x)),
+                        }
                     })
                     .unwrap_or_else(|| {
                         x.add_unnamed_type(type_prefix, v)?;
