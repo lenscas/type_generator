@@ -416,21 +416,35 @@ fn singular_build_in_type_to_name(
     type_prefix: &str,
 ) -> Result<String> {
     Ok(match a {
-        InstanceType::Null => "unit".to_string(),
+        InstanceType::Null => "System.ValueTuple".to_string(),
         InstanceType::Boolean => "bool".to_string(),
         InstanceType::Object => v
             .as_ref()
             .map(|v| {
-                x.add_unnamed_type(type_prefix, v)?;
-                Ok(type_prefix.to_owned())
+                v.additional_properties
+                    .as_ref()
+                    .map(|v| {
+                        get_type_from_schema(v, x, type_prefix).map(|v| format!("Map<string,{v}>"))
+                    })
+                    .unwrap_or_else(|| {
+                        x.add_unnamed_type(type_prefix, v)?;
+                        Ok(type_prefix.to_owned())
+                    })
             })
             .unwrap_or_else(|| Ok("object".to_string()))?,
         InstanceType::Array => y
             .as_ref()
-            .and_then(|v| v.items.as_ref())
-            .map(|v| match v {
+            .and_then(|v| {
+                v.items
+                    .as_ref()
+                    .map(|x| (v.unique_items.unwrap_or(false), x))
+            })
+            .map(|(unique, v)| match v {
                 SingleOrVec::Single(v) => {
-                    get_type_from_schema(v.as_ref(), x, type_prefix).map(|v| format!("{}[]", v))
+                    get_type_from_schema(v.as_ref(), x, type_prefix).map(|type_name| match unique {
+                        true => format!("{type_name}[]"),
+                        false => format!("{type_name}[]"),
+                    })
                 }
                 SingleOrVec::Vec(v) => v
                     .iter()
