@@ -1,6 +1,6 @@
-use schemars::JsonSchema;
+use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
-use std::{fs::OpenOptions, io::Write, process::Command};
+use std::{collections::HashMap, fs::OpenOptions, hash::Hash, io::Write, process::Command};
 use type_gen::{gen_from_type, ExternalTypeCollector};
 
 #[derive(JsonSchema, Deserialize, Serialize, PartialEq)]
@@ -15,6 +15,8 @@ struct TestType {
     an_array_of_options: Vec<Option<String>>,
     an_external_array: Vec<ExternalType>,
     recursive_type: SimpleRecursiveEnum,
+    hash_map: HashMap<char, String>,
+    bad_set: HashMap<char, ()>,
 }
 #[derive(JsonSchema, Deserialize, Serialize, PartialEq)]
 #[allow(dead_code)]
@@ -31,7 +33,7 @@ enum TestEnum {
     C { test: f32, test2: String },
     E(SimpleEnum),
 }
-#[derive(JsonSchema, Deserialize, Serialize, PartialEq)]
+#[derive(JsonSchema, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 enum SimpleEnum {
     A,
@@ -54,6 +56,17 @@ fn test_gen() {
         .into_option()
         .unwrap()
         .to_owned();
+    let hash_map = [
+        ('c', "nice".to_string()),
+        ('a', "nice".to_string()),
+        ('b', "nice".to_string()),
+        ('d', "nice".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let bad_set = [('N', ()), ('E', ()), ('S', ()), ('W', ())]
+        .into_iter()
+        .collect();
     let data = TestType {
         a_string: "this is a string".into(),
         a_number: 2,
@@ -76,6 +89,8 @@ fn test_gen() {
             },
         ],
         recursive_type: SimpleRecursiveEnum::Rec(Box::new(SimpleRecursiveEnum::Nope(20.1))),
+        hash_map,
+        bad_set,
     };
     let json = serde_json::to_string(&serde_json::to_string(&data).expect("could not serialize"))
         .expect("very ugly hack to escape everything did not work :(");
@@ -113,6 +128,20 @@ let main argv =
         .expect("could not open file");
     file.write_all(fsharp_program.as_bytes())
         .expect("Could not write program");
+
+    let mut file2 = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("./test_parsing/schema.json")
+        .expect("could not open file");
+    file2
+        .write_all(
+            serde_json::to_string_pretty(&schema_for!(TestType))
+                .unwrap()
+                .as_bytes(),
+        )
+        .expect("Could not write schema");
     let x = Command::new("dotnet")
         .arg("run")
         .current_dir("./test_parsing")
